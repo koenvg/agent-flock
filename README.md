@@ -26,8 +26,8 @@ The release binary is also usable in Rust, Go, Python, Java, and other projects.
 
 ```sh
 agent-flock -- npm run typecheck
-agent-flock --lock memory -- cargo test
-agent-flock --lock database -- ./scripts/integration-tests
+agent-flock --lock high-memory -- cargo test
+agent-flock --lock local-postgres -- ./scripts/integration-tests
 ```
 
 The `--` separator is required. Everything after it is passed directly to the guarded program without shell reparsing.
@@ -37,6 +37,8 @@ agent-flock [--lock <name>] -- <command> [args...]
 ```
 
 The default lock name is `default`. Commands using the same name run one at a time. Commands using different names may run concurrently.
+
+Name a lock after the shared bottleneck, not after one command. For example, `high-memory` can cover type checks, tests, linters, and builds because they compete for the same RAM. `local-postgres` can cover commands that need exclusive access to one development database.
 
 ### package.json example
 
@@ -48,21 +50,21 @@ Route each memory-heavy script through the same resource group:
     "agent-flock": "^0.1.0"
   },
   "scripts": {
-    "typecheck": "agent-flock --lock memory -- tsc --noEmit",
-    "test": "agent-flock --lock memory -- vitest run",
-    "lint": "agent-flock --lock memory -- eslint .",
-    "build": "agent-flock --lock memory -- vite build"
+    "typecheck": "agent-flock --lock high-memory -- tsc --noEmit",
+    "test": "agent-flock --lock high-memory -- vitest run",
+    "lint": "agent-flock --lock high-memory -- eslint .",
+    "build": "agent-flock --lock high-memory -- vite build"
   }
 }
 ```
 
-Use separate names only when the resources are genuinely independent:
+Use another name only for a different bottleneck. Here, Vitest joins the shared high-memory queue, while the database reset is serialized with other commands that use one local PostgreSQL instance:
 
 ```json
 {
   "scripts": {
-    "test": "agent-flock --lock memory -- vitest run",
-    "database:test": "agent-flock --lock database -- ./scripts/database-tests"
+    "test": "agent-flock --lock high-memory -- vitest run",
+    "database:reset": "agent-flock --lock local-postgres -- ./scripts/reset-test-database"
   }
 }
 ```
@@ -88,8 +90,8 @@ The empty lock files remain after commands finish. File existence does not mean 
 Immediate acquisition is silent. On contention, the CLI prints two lines to stderr:
 
 ```text
-agent-flock: waiting for lock "memory"
-agent-flock: acquired lock "memory" after 4.2s
+agent-flock: waiting for lock "high-memory"
+agent-flock: acquired lock "high-memory" after 4.2s
 ```
 
 It checks the lock every 100 milliseconds but does not print polling messages. Waiting has no timeout.
