@@ -1,0 +1,50 @@
+{
+  "name": "agent-flock",
+  "version": "0.1.0",
+  "description": "Serialize memory-heavy development commands across processes and Git worktrees",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/koenvg/agent-flock.git"
+  },
+  "bugs": {
+    "url": "https://github.com/koenvg/agent-flock/issues"
+  },
+  "homepage": "https://github.com/koenvg/agent-flock#readme",
+  "keywords": [
+    "agents",
+    "cli",
+    "concurrency",
+    "git-worktree",
+    "lock"
+  ],
+  "bin": {
+    "agent-flock": "npm/agent-flock.cjs"
+  },
+  "files": [
+    "npm/agent-flock.cjs",
+    "README.md",
+    "LICENSE"
+  ],
+  "engines": {
+    "node": ">=18"
+  },
+  "optionalDependencies": {
+    "@agent-flock/darwin-arm64": "0.1.0",
+    "@agent-flock/darwin-x64": "0.1.0",
+    "@agent-flock/linux-arm64": "0.1.0",
+    "@agent-flock/linux-x64": "0.1.0"
+  },
+  "scripts": {
+    "build": "cargo build --release",
+    "format": "cargo fmt --all -- --check",
+    "format:write": "cargo fmt --all",
+    "lint": "cargo clippy --all-targets --all-features -- -D warnings && node --check npm/agent-flock.cjs && node --check npm/agent-flock.test.cjs && node --check npm/assemble-platform-packages.mjs && node --check npm/package.test.cjs",
+    "test": "cargo test --all-targets && node --test npm/*.test.cjs",
+    "typecheck": "cargo check --all-targets"
+  },
+  "publishConfig": {
+    "access": "public",
+    "provenance": true
+  }
+}

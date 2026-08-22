@@ -1,0 +1,26 @@
+[package]
+name = "agent-flock"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.89"
+description = "Serialize memory-heavy development commands across processes and Git worktrees"
+license = "MIT"
+repository = "https://github.com/koenvg/agent-flock"
+readme = "README.md"
+keywords = ["cli", "concurrency", "lock", "worktree"]
+categories = ["command-line-utilities", "development-tools"]
+
+[[bin]]
+name = "agent-flock"
+path = "src/main.rs"
+
+[dependencies]
+libc = "0.2"
+sha2 = "0.10"
+signal-hook = "0.3"
+
+[profile.release]
+lto = true
+codegen-units = 1
+strip = true
+panic = "abort"
