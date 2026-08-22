@@ -62,17 +62,11 @@ impl LockGuard {
 }
 
 pub fn acquire(name: &str, signals: &SignalMonitor) -> Result<LockGuard, AcquireError> {
-    let directory = lock_directory();
-    fs::create_dir_all(&directory)?;
+    let directory = prepare_lock_directory(lock_directory()?)?;
 
     let digest = Sha256::digest([b"agent-flock-lock-v1\0".as_slice(), name.as_bytes()].concat());
-    let path = directory.join(format!("v1-{digest:x}.lock"));
-    let file = OpenOptions::new()
-        .read(true)
-        .write(true)
-        .create(true)
-        .truncate(false)
-        .open(path)?;
+    let file_name = format!("v1-{digest:x}.lock");
+    let file = open_lock_file(&directory, &file_name)?;
 
     match file.try_lock() {
         Ok(()) => {
@@ -109,19 +103,154 @@ pub fn acquire(name: &str, signals: &SignalMonitor) -> Result<LockGuard, Acquire
     }
 }
 
-fn lock_directory() -> PathBuf {
+struct LockDirectory {
+    path: PathBuf,
+    #[cfg(unix)]
+    expected_owner: Option<libc::uid_t>,
+}
+
+struct PreparedLockDirectory {
+    path: PathBuf,
+    #[cfg(unix)]
+    descriptor: Option<File>,
+}
+
+fn lock_directory() -> io::Result<LockDirectory> {
     if let Some(directory) = env::var_os("AGENT_FLOCK_LOCK_DIR") {
-        return PathBuf::from(directory);
+        if directory.is_empty() {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "AGENT_FLOCK_LOCK_DIR must not be empty",
+            ));
+        }
+
+        return Ok(LockDirectory {
+            path: PathBuf::from(directory),
+            #[cfg(unix)]
+            expected_owner: None,
+        });
     }
 
     #[cfg(unix)]
     {
         let effective_user = unsafe { libc::geteuid() };
-        PathBuf::from("/tmp").join(format!("agent-flock-{effective_user}"))
+        Ok(LockDirectory {
+            path: PathBuf::from("/tmp").join(format!("agent-flock-{effective_user}")),
+            expected_owner: Some(effective_user),
+        })
     }
 
     #[cfg(not(unix))]
     {
-        env::temp_dir().join("agent-flock")
+        Ok(LockDirectory {
+            path: env::temp_dir().join("agent-flock"),
+        })
     }
+}
+
+fn prepare_lock_directory(directory: LockDirectory) -> io::Result<PreparedLockDirectory> {
+    #[cfg(unix)]
+    if let Some(expected_owner) = directory.expected_owner {
+        let descriptor = prepare_default_lock_directory(&directory.path, expected_owner)?;
+        return Ok(PreparedLockDirectory {
+            path: directory.path,
+            descriptor: Some(descriptor),
+        });
+    }
+
+    fs::create_dir_all(&directory.path)?;
+    Ok(PreparedLockDirectory {
+        path: directory.path,
+        #[cfg(unix)]
+        descriptor: None,
+    })
+}
+
+#[cfg(unix)]
+fn prepare_default_lock_directory(
+    path: &std::path::Path,
+    expected_owner: libc::uid_t,
+) -> io::Result<File> {
+    use std::os::unix::fs::{DirBuilderExt, MetadataExt, OpenOptionsExt};
+
+    let mut builder = fs::DirBuilder::new();
+    builder.mode(0o700);
+    match builder.create(path) {
+        Ok(()) => {}
+        Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {}
+        Err(error) => return Err(error),
+    }
+
+    let path_metadata = fs::symlink_metadata(path)?;
+    if path_metadata.file_type().is_symlink() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("default lock path is a symbolic link: {}", path.display()),
+        ));
+    }
+    if !path_metadata.is_dir() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("default lock path is not a directory: {}", path.display()),
+        ));
+    }
+
+    let descriptor = OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_DIRECTORY | libc::O_NOFOLLOW | libc::O_CLOEXEC)
+        .open(path)?;
+    let metadata = descriptor.metadata()?;
+    if !metadata.is_dir() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("default lock path is not a directory: {}", path.display()),
+        ));
+    }
+    if metadata.uid() != expected_owner {
+        return Err(io::Error::new(
+            io::ErrorKind::PermissionDenied,
+            format!(
+                "default lock directory is owned by user {}, expected effective user {expected_owner}: {}",
+                metadata.uid(),
+                path.display()
+            ),
+        ));
+    }
+
+    Ok(descriptor)
+}
+
+fn open_lock_file(directory: &PreparedLockDirectory, file_name: &str) -> io::Result<File> {
+    #[cfg(unix)]
+    if let Some(descriptor) = &directory.descriptor {
+        use std::ffi::CString;
+        use std::os::fd::{AsRawFd, FromRawFd};
+
+        let file_name = CString::new(file_name).map_err(|_| {
+            io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "lock filename contains a null byte",
+            )
+        })?;
+        let file_descriptor = unsafe {
+            libc::openat(
+                descriptor.as_raw_fd(),
+                file_name.as_ptr(),
+                libc::O_RDWR | libc::O_CREAT | libc::O_CLOEXEC | libc::O_NOFOLLOW,
+                0o600,
+            )
+        };
+        if file_descriptor == -1 {
+            return Err(io::Error::last_os_error());
+        }
+
+        return Ok(unsafe { File::from_raw_fd(file_descriptor) });
+    }
+
+    OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .open(directory.path.join(file_name))
 }

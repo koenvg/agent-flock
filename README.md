@@ -77,11 +77,11 @@ On macOS and Linux, the default directory is:
 /tmp/agent-flock-<effective-user-id>
 ```
 
-This location is outside every worktree and does not depend on `cwd`, `TMPDIR`, or the repository path. All processes for the same OS account therefore use the same namespace. The tool does not coordinate different OS accounts.
+This location is outside every worktree and does not depend on `cwd`, `TMPDIR`, or the repository path. All processes for the same OS account therefore use the same namespace. The tool does not coordinate different OS accounts. agent-flock creates the directory with mode `0700` and refuses to use it if the path is a symlink, is not a directory, or belongs to another effective user.
 
 A lock filename is `v1-<sha256>.lock`. The digest covers a protocol-version prefix and the exact UTF-8 lock name. This keeps paths bounded and avoids collisions caused by sanitizing resource names.
 
-Set `AGENT_FLOCK_LOCK_DIR` to use another directory. Every cooperating process must use the same value. Use a local filesystem. Advisory lock behavior on network filesystems differs by operating system and mount configuration.
+Set `AGENT_FLOCK_LOCK_DIR` to a non-empty path to use another directory. Every cooperating process must use the same value. Use a local filesystem. Advisory lock behavior on network filesystems differs by operating system and mount configuration.
 
 The empty lock files remain after commands finish. File existence does not mean the lock is held.
 

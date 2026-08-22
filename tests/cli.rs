@@ -1,10 +1,14 @@
 #![cfg(unix)]
 
+use std::ffi::CString;
 use std::fs;
 use std::io::Write;
+use std::os::unix::ffi::OsStrExt;
+use std::os::unix::fs::{MetadataExt, PermissionsExt, symlink};
 use std::os::unix::process::ExitStatusExt;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
+use std::sync::Mutex;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::thread;
 use std::time::{Duration, Instant};
@@ -45,6 +49,155 @@ fn wait_for_path(path: &Path) {
 
 fn agent_flock() -> Command {
     Command::new(env!("CARGO_BIN_EXE_agent-flock"))
+}
+
+static DEFAULT_LOCK_DIRECTORY_MUTEX: Mutex<()> = Mutex::new(());
+
+fn lock_default_directory_tests() -> std::sync::MutexGuard<'static, ()> {
+    DEFAULT_LOCK_DIRECTORY_MUTEX
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
+struct DefaultLockDirectoryFixture {
+    path: PathBuf,
+    backup: Option<PathBuf>,
+    _lock: std::sync::MutexGuard<'static, ()>,
+}
+
+impl DefaultLockDirectoryFixture {
+    fn new() -> Self {
+        let lock = lock_default_directory_tests();
+        let effective_user = unsafe { libc::geteuid() };
+        let path = PathBuf::from("/tmp").join(format!("agent-flock-{effective_user}"));
+        let backup = match fs::symlink_metadata(&path) {
+            Ok(_) => {
+                let sequence = NEXT_TEMP_DIRECTORY.fetch_add(1, Ordering::Relaxed);
+                let backup = PathBuf::from("/tmp").join(format!(
+                    "agent-flock-test-backup-{}-{}-{sequence}",
+                    std::process::id(),
+                    effective_user
+                ));
+                fs::rename(&path, &backup).expect("existing default lock path should be moved");
+                Some(backup)
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
+            Err(error) => panic!("default lock path should be inspectable: {error}"),
+        };
+
+        Self {
+            path,
+            backup,
+            _lock: lock,
+        }
+    }
+
+    fn path(&self) -> &Path {
+        &self.path
+    }
+}
+
+impl Drop for DefaultLockDirectoryFixture {
+    fn drop(&mut self) {
+        match fs::symlink_metadata(&self.path) {
+            Ok(metadata) if metadata.is_dir() => {
+                let _ = fs::remove_dir_all(&self.path);
+            }
+            Ok(_) => {
+                let _ = fs::remove_file(&self.path);
+            }
+            Err(_) => {}
+        }
+
+        if let Some(backup) = &self.backup {
+            fs::rename(backup, &self.path).expect("default lock path should be restored");
+        }
+    }
+}
+
+fn run_with_default_lock_directory() -> std::process::Output {
+    agent_flock()
+        .env_remove("AGENT_FLOCK_LOCK_DIR")
+        .args(["--", "sh", "-c", "exit 99"])
+        .output()
+        .expect("agent-flock should start")
+}
+
+fn assert_lock_directory_failure(output: std::process::Output, expected: &str) {
+    assert_eq!(output.status.code(), Some(1));
+    assert_eq!(output.stdout, b"");
+    let stderr = String::from_utf8(output.stderr).expect("stderr should be UTF-8");
+    assert!(
+        stderr.contains(expected),
+        "expected stderr to contain {expected:?}, got {stderr:?}"
+    );
+}
+
+#[test]
+fn rejects_an_empty_configured_lock_directory() {
+    let output = agent_flock()
+        .env("AGENT_FLOCK_LOCK_DIR", "")
+        .args(["--", "sh", "-c", "exit 99"])
+        .output()
+        .expect("agent-flock should start");
+
+    assert_lock_directory_failure(output, "AGENT_FLOCK_LOCK_DIR must not be empty");
+}
+
+#[test]
+fn rejects_a_symlink_at_the_default_lock_path() {
+    let fixture = DefaultLockDirectoryFixture::new();
+    let target = TestDirectory::new("default-lock-symlink-target");
+    symlink(target.path(), fixture.path()).expect("default lock path symlink should be created");
+
+    let output = run_with_default_lock_directory();
+
+    assert_lock_directory_failure(output, "default lock path is a symbolic link");
+}
+
+#[test]
+fn rejects_a_file_at_the_default_lock_path() {
+    let fixture = DefaultLockDirectoryFixture::new();
+    fs::write(fixture.path(), b"not a directory")
+        .expect("default lock path file should be created");
+
+    let output = run_with_default_lock_directory();
+
+    assert_lock_directory_failure(output, "default lock path is not a directory");
+}
+
+#[test]
+fn creates_the_default_lock_directory_with_private_permissions() {
+    let fixture = DefaultLockDirectoryFixture::new();
+
+    let output = run_with_default_lock_directory();
+
+    assert_eq!(output.status.code(), Some(99));
+    let metadata = fs::metadata(fixture.path()).expect("default lock directory should exist");
+    assert_eq!(metadata.permissions().mode() & 0o777, 0o700);
+    assert_eq!(metadata.uid(), unsafe { libc::geteuid() });
+}
+
+#[test]
+fn rejects_a_default_lock_directory_owned_by_another_user_when_privileged() {
+    let effective_user = unsafe { libc::geteuid() };
+    if effective_user != 0 {
+        return;
+    }
+
+    let fixture = DefaultLockDirectoryFixture::new();
+    fs::create_dir(fixture.path()).expect("default lock directory should be created");
+    let path = CString::new(fixture.path().as_os_str().as_bytes())
+        .expect("default lock path should not contain a null byte");
+    let result = unsafe { libc::chown(path.as_ptr(), 1, u32::MAX) };
+    assert_eq!(
+        result, 0,
+        "test should change the default lock directory owner"
+    );
+
+    let output = run_with_default_lock_directory();
+
+    assert_lock_directory_failure(output, "default lock directory is owned by user 1");
 }
 
 #[test]
@@ -331,6 +484,7 @@ fn preserves_cwd_environment_and_stdio() {
 
 #[test]
 fn default_lock_directory_is_stable_across_temp_directories() {
+    let _lock = lock_default_directory_tests();
     let root = TestDirectory::new("stable-default-directory");
     let worktree_a = root.path().join("worktree-a");
     let worktree_b = root.path().join("worktree-b");
