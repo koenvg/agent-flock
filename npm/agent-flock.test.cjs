@@ -16,8 +16,18 @@ const platformPackages = {
 
 function fixture() {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'agent-flock-npm-test-'));
-  const launcher = path.join(root, 'agent-flock.cjs');
+  const launcher = path.join(root, 'npm', 'agent-flock.cjs');
+  fs.mkdirSync(path.dirname(launcher), { recursive: true });
   fs.copyFileSync(path.join(__dirname, 'agent-flock.cjs'), launcher);
+  fs.writeFileSync(
+    path.join(root, 'package.json'),
+    JSON.stringify({
+      name: 'agent-flock',
+      version: '0.1.0',
+      private: true,
+      bin: { 'agent-flock': 'npm/agent-flock.cjs' },
+    }),
+  );
   return { root, launcher };
 }
 
@@ -31,6 +41,12 @@ function installFakeBinary(root, contents) {
     path.join(packageRoot, 'package.json'),
     JSON.stringify({ name: packageName, version: '0.1.0' }),
   );
+  fs.writeFileSync(binary, contents, { mode: 0o755 });
+}
+
+function installSourceBinary(root, contents) {
+  const binary = path.join(root, 'target', 'debug', 'agent-flock');
+  fs.mkdirSync(path.dirname(binary), { recursive: true });
   fs.writeFileSync(binary, contents, { mode: 0o755 });
 }
 
@@ -54,6 +70,36 @@ test('npm launcher forwards arguments, stdio, cwd, environment, and exit code', 
     `cwd=${fs.realpathSync(root)}\nenv=from-parent\n<two words>\n<*.rs>\n<semi;colon>\n`,
   );
   assert.equal(result.stderr, 'launcher-stderr\n');
+});
+
+test('npm exec uses a source checkout binary and restores its consumed separator', (context) => {
+  const { root } = fixture();
+  context.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  installSourceBinary(root, '#!/bin/sh\nprintf "source:<%s>\\n" "$@"\n');
+
+  const result = spawnSync('npm', ['exec', 'agent-flock', '--', 'ls'], {
+    cwd: root,
+    encoding: 'utf8',
+  });
+
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(result.stdout, 'source:<-->\nsource:<ls>\n');
+  assert.equal(result.stderr, '');
+});
+
+test('npm exec restores its separator when command arguments contain another separator', (context) => {
+  const { root } = fixture();
+  context.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  installSourceBinary(root, '#!/bin/sh\nprintf "source:<%s>\\n" "$@"\n');
+
+  const result = spawnSync('npm', ['exec', 'agent-flock', '--', 'sh', '--', '-c'], {
+    cwd: root,
+    encoding: 'utf8',
+  });
+
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(result.stdout, 'source:<-->\nsource:<sh>\nsource:<-->\nsource:<-c>\n');
+  assert.equal(result.stderr, '');
 });
 
 test('npm launcher reports a missing platform binary without an install script fallback', (context) => {

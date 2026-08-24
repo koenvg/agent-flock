@@ -1,6 +1,8 @@
 #!/usr/bin/env node
 'use strict';
 
+const fs = require('node:fs');
+const path = require('node:path');
 const { spawn } = require('node:child_process');
 
 const platformPackages = {
@@ -26,6 +28,9 @@ function resolveBinary() {
   try {
     return require.resolve(`${packageName}/bin/agent-flock`, { paths: [__dirname] });
   } catch {
+    const sourceBinary = path.resolve(__dirname, '..', 'target', 'debug', 'agent-flock');
+    if (fs.existsSync(sourceBinary)) return sourceBinary;
+
     fail(
       `native package is missing for ${platform}; reinstall agent-flock with optional dependencies enabled`,
     );
@@ -33,11 +38,20 @@ function resolveBinary() {
   }
 }
 
+function nativeArguments() {
+  const args = process.argv.slice(2);
+  if (process.env.npm_command !== 'exec' || args[0] === '--') return args;
+
+  if (!args[0] || args[0].startsWith('-')) return args;
+
+  return ['--', ...args];
+}
+
 function main() {
   const binary = resolveBinary();
   if (!binary) return;
 
-  const child = spawn(binary, process.argv.slice(2), {
+  const child = spawn(binary, nativeArguments(), {
     cwd: process.cwd(),
     env: process.env,
     stdio: 'inherit',

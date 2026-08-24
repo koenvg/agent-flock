@@ -20,6 +20,12 @@ For development from this repository:
 cargo install --path . --locked
 ```
 
+In a source checkout, the npm launcher falls back to `target/debug/agent-flock` when the platform package is not installed. After `cargo build` or `cargo test`, it also restores the command separator consumed by `npm exec`:
+
+```sh
+npm exec agent-flock -- ls
+```
+
 The release binary is also usable in Rust, Go, Python, Java, and other projects. Nothing in the locking protocol depends on Node.js or an agent framework.
 
 ## Usage
