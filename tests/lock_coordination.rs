@@ -144,6 +144,30 @@ fn rejects_an_empty_configured_lock_directory() {
 }
 
 #[test]
+fn rejects_a_symlinked_lock_file_in_a_configured_directory() {
+    let root = TestDirectory::new("configured-lock-file-symlink");
+    let lock_directory = root.path().join("locks");
+    fs::create_dir(&lock_directory).expect("configured lock directory should be created");
+    let target = root.path().join("outside-lock-directory");
+    fs::write(&target, b"outside").expect("symlink target should be created");
+    let lock_path = lock_directory
+        .join("v1-32ec1ae9844e3b8c4bfb8a9501835e16eb3e0399d0b6d1e741876964de1da307.lock");
+    symlink(&target, lock_path).expect("lock file symlink should be created");
+
+    let output = agent_flock()
+        .env("AGENT_FLOCK_LOCK_DIR", &lock_directory)
+        .args(["--lock", "memory", "--", "sh", "-c", "exit 99"])
+        .output()
+        .expect("agent-flock should start");
+
+    assert_lock_directory_failure(output, "failed to acquire lock \"memory\"");
+    assert_eq!(
+        fs::read(target).expect("symlink target should remain readable"),
+        b"outside"
+    );
+}
+
+#[test]
 fn rejects_a_symlink_at_the_default_lock_path() {
     let fixture = DefaultLockDirectoryFixture::new();
     let target = TestDirectory::new("default-lock-symlink-target");
