@@ -1,55 +1,19 @@
 #![cfg(unix)]
 
+mod support;
+
 use std::ffi::CString;
 use std::fs;
-use std::io::Write;
 use std::os::unix::ffi::OsStrExt;
 use std::os::unix::fs::{MetadataExt, PermissionsExt, symlink};
 use std::os::unix::process::ExitStatusExt;
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
+use std::process::{Command, Output};
 use std::sync::Mutex;
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::thread;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
-static NEXT_TEMP_DIRECTORY: AtomicU64 = AtomicU64::new(0);
-
-struct TestDirectory(PathBuf);
-
-impl TestDirectory {
-    fn new(label: &str) -> Self {
-        let sequence = NEXT_TEMP_DIRECTORY.fetch_add(1, Ordering::Relaxed);
-        let path = std::env::temp_dir().join(format!(
-            "agent-flock-test-{}-{label}-{sequence}",
-            std::process::id()
-        ));
-        fs::create_dir(&path).expect("test directory should be created");
-        Self(path)
-    }
-
-    fn path(&self) -> &Path {
-        &self.0
-    }
-}
-
-impl Drop for TestDirectory {
-    fn drop(&mut self) {
-        let _ = fs::remove_dir_all(&self.0);
-    }
-}
-
-fn wait_for_path(path: &Path) {
-    let deadline = Instant::now() + Duration::from_secs(5);
-    while !path.exists() {
-        assert!(Instant::now() < deadline, "timed out waiting for {path:?}");
-        thread::sleep(Duration::from_millis(10));
-    }
-}
-
-fn agent_flock() -> Command {
-    Command::new(env!("CARGO_BIN_EXE_agent-flock"))
-}
+use support::{TestDirectory, agent_flock, send_signal, unique_path_in, wait_for_path};
 
 static DEFAULT_LOCK_DIRECTORY_MUTEX: Mutex<()> = Mutex::new(());
 
@@ -72,12 +36,10 @@ impl DefaultLockDirectoryFixture {
         let path = PathBuf::from("/tmp").join(format!("agent-flock-{effective_user}"));
         let backup = match fs::symlink_metadata(&path) {
             Ok(_) => {
-                let sequence = NEXT_TEMP_DIRECTORY.fetch_add(1, Ordering::Relaxed);
-                let backup = PathBuf::from("/tmp").join(format!(
-                    "agent-flock-test-backup-{}-{}-{sequence}",
-                    std::process::id(),
-                    effective_user
-                ));
+                let backup = unique_path_in(
+                    Path::new("/tmp"),
+                    &format!("default-lock-backup-{effective_user}"),
+                );
                 fs::rename(&path, &backup).expect("existing default lock path should be moved");
                 Some(backup)
             }
@@ -115,7 +77,7 @@ impl Drop for DefaultLockDirectoryFixture {
     }
 }
 
-fn run_with_default_lock_directory() -> std::process::Output {
+fn run_with_default_lock_directory() -> Output {
     agent_flock()
         .env_remove("AGENT_FLOCK_LOCK_DIR")
         .args(["--", "sh", "-c", "exit 99"])
@@ -123,7 +85,7 @@ fn run_with_default_lock_directory() -> std::process::Output {
         .expect("agent-flock should start")
 }
 
-fn assert_lock_directory_failure(output: std::process::Output, expected: &str) {
+fn assert_lock_directory_failure(output: Output, expected: &str) {
     assert_eq!(output.status.code(), Some(1));
     assert_eq!(output.stdout, b"");
     let stderr = String::from_utf8(output.stderr).expect("stderr should be UTF-8");
@@ -131,6 +93,43 @@ fn assert_lock_directory_failure(output: std::process::Output, expected: &str) {
         stderr.contains(expected),
         "expected stderr to contain {expected:?}, got {stderr:?}"
     );
+}
+
+fn critical_section_command(
+    root: &Path,
+    worktree: &Path,
+    lock_name: &str,
+    participant: &str,
+) -> Command {
+    let script = r#"
+critical=$1
+log=$2
+participant=$3
+if ! mkdir "$critical" 2>/dev/null; then
+  printf 'overlap:%s\n' "$participant" >> "$log"
+  exit 91
+fi
+printf 'enter:%s\n' "$participant" >> "$log"
+sleep 0.25
+printf 'exit:%s\n' "$participant" >> "$log"
+rmdir "$critical"
+"#;
+
+    let mut command = agent_flock();
+    command
+        .current_dir(worktree)
+        .env("AGENT_FLOCK_LOCK_DIR", root.join("locks"))
+        .arg("--lock")
+        .arg(lock_name)
+        .arg("--")
+        .arg("sh")
+        .arg("-c")
+        .arg(script)
+        .arg("critical-section")
+        .arg(root.join("critical"))
+        .arg(root.join("events.log"))
+        .arg(participant);
+    command
 }
 
 #[test]
@@ -201,81 +200,6 @@ fn rejects_a_default_lock_directory_owned_by_another_user_when_privileged() {
 }
 
 #[test]
-fn forwards_the_guarded_commands_exit_code() {
-    let root = TestDirectory::new("exit-code");
-    let status = agent_flock()
-        .env("AGENT_FLOCK_LOCK_DIR", root.path().join("locks"))
-        .args(["--", "sh", "-c", "exit 37"])
-        .status()
-        .expect("agent-flock should start");
-
-    assert_eq!(status.code(), Some(37));
-}
-
-#[test]
-fn forwards_arguments_without_shell_reparsing() {
-    let root = TestDirectory::new("arguments");
-    let output = agent_flock()
-        .env("AGENT_FLOCK_LOCK_DIR", root.path().join("locks"))
-        .args([
-            "--",
-            "sh",
-            "-c",
-            "printf '<%s>\\n' \"$@\"",
-            "argument-printer",
-            "two words",
-            "*.rs",
-            "semi;colon",
-            "quote\"mark",
-        ])
-        .output()
-        .expect("agent-flock should start");
-
-    assert!(output.status.success());
-    assert_eq!(
-        String::from_utf8(output.stdout).expect("stdout should be UTF-8"),
-        "<two words>\n<*.rs>\n<semi;colon>\n<quote\"mark>\n"
-    );
-}
-
-fn critical_section_command(
-    root: &Path,
-    worktree: &Path,
-    lock_name: &str,
-    participant: &str,
-) -> Command {
-    let script = r#"
-critical=$1
-log=$2
-participant=$3
-if ! mkdir "$critical" 2>/dev/null; then
-  printf 'overlap:%s\n' "$participant" >> "$log"
-  exit 91
-fi
-printf 'enter:%s\n' "$participant" >> "$log"
-sleep 0.25
-printf 'exit:%s\n' "$participant" >> "$log"
-rmdir "$critical"
-"#;
-
-    let mut command = agent_flock();
-    command
-        .current_dir(worktree)
-        .env("AGENT_FLOCK_LOCK_DIR", root.join("locks"))
-        .arg("--lock")
-        .arg(lock_name)
-        .arg("--")
-        .arg("sh")
-        .arg("-c")
-        .arg(script)
-        .arg("critical-section")
-        .arg(root.join("critical"))
-        .arg(root.join("events.log"))
-        .arg(participant);
-    command
-}
-
-#[test]
 fn separate_worktrees_cannot_enter_the_same_guarded_section_together() {
     let root = TestDirectory::new("same-group");
     let worktree_a = root.path().join("worktree-a");
@@ -300,14 +224,6 @@ fn separate_worktrees_cannot_enter_the_same_guarded_section_together() {
     let events = fs::read_to_string(root.path().join("events.log"))
         .expect("critical-section events should be recorded");
     assert_eq!(events, "enter:a\nexit:a\nenter:b\nexit:b\n");
-}
-
-fn send_signal(pid: u32, signal: &str) {
-    let status = Command::new("kill")
-        .args([signal, &pid.to_string()])
-        .status()
-        .expect("kill should start");
-    assert!(status.success(), "kill should deliver {signal} to {pid}");
 }
 
 #[test]
@@ -358,59 +274,6 @@ fn crash_recovery_needs_no_stale_timeout_and_tracks_the_orphaned_command() {
 }
 
 #[test]
-fn interruption_reaches_the_guarded_command_and_releases_the_lock() {
-    let root = TestDirectory::new("interruption");
-    let lock_directory = root.path().join("locks");
-    let guarded_pid_path = root.path().join("guarded.pid");
-    let interrupted_path = root.path().join("interrupted");
-
-    let mut holder = agent_flock();
-    holder
-        .env("AGENT_FLOCK_LOCK_DIR", &lock_directory)
-        .args(["--lock", "memory", "--", "sh", "-c"])
-        .arg(
-            "trap 'printf interrupted > \"$2\"; exit 0' TERM; \
-             printf '%s' \"$$\" > \"$1\"; while :; do sleep 0.05; done",
-        )
-        .arg("holder")
-        .arg(&guarded_pid_path)
-        .arg(&interrupted_path);
-    let mut holder = holder.spawn().expect("interruptible holder should start");
-    wait_for_path(&guarded_pid_path);
-    let guarded_pid: u32 = fs::read_to_string(&guarded_pid_path)
-        .expect("guarded pid should be readable")
-        .parse()
-        .expect("guarded pid should be numeric");
-
-    send_signal(holder.id(), "-TERM");
-    let holder_status = holder.wait().expect("interrupted wrapper should finish");
-
-    let deadline = Instant::now() + Duration::from_secs(1);
-    while !interrupted_path.exists() && Instant::now() < deadline {
-        thread::sleep(Duration::from_millis(10));
-    }
-    let guarded_command_was_interrupted = interrupted_path.exists();
-    if !guarded_command_was_interrupted {
-        let _ = Command::new("kill")
-            .args(["-KILL", &guarded_pid.to_string()])
-            .status();
-    }
-
-    assert_eq!(holder_status.signal(), Some(15));
-    assert!(
-        guarded_command_was_interrupted,
-        "guarded command did not receive SIGTERM"
-    );
-
-    let release_status = agent_flock()
-        .env("AGENT_FLOCK_LOCK_DIR", &lock_directory)
-        .args(["--lock", "memory", "--", "sh", "-c", "exit 0"])
-        .status()
-        .expect("lock should be reusable after interruption");
-    assert!(release_status.success());
-}
-
-#[test]
 fn different_lock_groups_can_run_concurrently() {
     let root = TestDirectory::new("different-groups");
     let worktree_a = root.path().join("worktree-a");
@@ -439,47 +302,6 @@ fn different_lock_groups_can_run_concurrently() {
         second_status.success(),
         "different resource groups were unexpectedly serialized"
     );
-}
-
-#[test]
-fn preserves_cwd_environment_and_stdio() {
-    let root = TestDirectory::new("process-context");
-    let worktree = root.path().join("worktree");
-    fs::create_dir(&worktree).expect("worktree should be created");
-
-    let mut command = agent_flock();
-    command
-        .current_dir(&worktree)
-        .env("AGENT_FLOCK_LOCK_DIR", root.path().join("locks"))
-        .env("AGENT_FLOCK_TEST_VALUE", "from-parent")
-        .args(["--", "sh", "-c"])
-        .arg(
-            "read input; printf 'cwd=%s\\nenv=%s\\nstdin=%s\\n' \
-             \"$PWD\" \"$AGENT_FLOCK_TEST_VALUE\" \"$input\"; \
-             printf 'stderr-marker\\n' >&2",
-        )
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped());
-    let mut child = command.spawn().expect("agent-flock should start");
-    child
-        .stdin
-        .as_mut()
-        .expect("wrapper stdin should be piped")
-        .write_all(b"from-stdin\n")
-        .expect("stdin should be writable");
-    let output = child.wait_with_output().expect("agent-flock should finish");
-
-    let canonical_worktree = fs::canonicalize(&worktree).expect("worktree should canonicalize");
-    assert!(output.status.success());
-    assert_eq!(
-        String::from_utf8(output.stdout).expect("stdout should be UTF-8"),
-        format!(
-            "cwd={}\nenv=from-parent\nstdin=from-stdin\n",
-            canonical_worktree.display()
-        )
-    );
-    assert_eq!(output.stderr, b"stderr-marker\n");
 }
 
 #[test]
@@ -514,66 +336,6 @@ fn default_lock_directory_is_stable_across_temp_directories() {
     let events = fs::read_to_string(root.path().join("events.log"))
         .expect("critical-section events should be recorded");
     assert_eq!(events, "enter:a\nexit:a\nenter:b\nexit:b\n");
-}
-
-#[test]
-fn interruption_stops_a_waiter_without_running_its_command() {
-    let root = TestDirectory::new("waiting-interruption");
-    let lock_directory = root.path().join("locks");
-    let guarded_pid_path = root.path().join("guarded.pid");
-    let command_ran_path = root.path().join("command-ran");
-
-    let mut holder = agent_flock();
-    holder
-        .env("AGENT_FLOCK_LOCK_DIR", &lock_directory)
-        .args(["--lock", "memory", "--", "sh", "-c"])
-        .arg("printf '%s' \"$$\" > \"$1\"; exec sleep 60")
-        .arg("holder")
-        .arg(&guarded_pid_path);
-    let mut holder = holder.spawn().expect("holder should start");
-    wait_for_path(&guarded_pid_path);
-    let guarded_pid: u32 = fs::read_to_string(&guarded_pid_path)
-        .expect("guarded pid should be readable")
-        .parse()
-        .expect("guarded pid should be numeric");
-
-    let mut waiter = agent_flock();
-    waiter
-        .env("AGENT_FLOCK_LOCK_DIR", &lock_directory)
-        .args(["--lock", "memory", "--", "sh", "-c"])
-        .arg("printf ran > \"$1\"")
-        .arg("waiter")
-        .arg(&command_ran_path)
-        .stderr(Stdio::null());
-    let mut waiter = waiter.spawn().expect("waiter should start");
-    thread::sleep(Duration::from_millis(200));
-    assert!(!command_ran_path.exists());
-
-    send_signal(waiter.id(), "-TERM");
-    let deadline = Instant::now() + Duration::from_secs(1);
-    let mut waiter_status_before_release = None;
-    while Instant::now() < deadline {
-        if let Some(status) = waiter.try_wait().expect("waiter status should be readable") {
-            waiter_status_before_release = Some(status);
-            break;
-        }
-        thread::sleep(Duration::from_millis(10));
-    }
-
-    send_signal(guarded_pid, "-KILL");
-    let _ = holder.wait();
-    let interrupted_while_waiting = waiter_status_before_release.is_some();
-    let waiter_status = match waiter_status_before_release {
-        Some(status) => status,
-        None => waiter.wait().expect("waiter should eventually finish"),
-    };
-
-    assert!(
-        interrupted_while_waiting,
-        "interrupted waiter remained blocked on the lock"
-    );
-    assert_eq!(waiter_status.signal(), Some(15));
-    assert!(!command_ran_path.exists());
 }
 
 #[test]
@@ -618,35 +380,4 @@ fn waiting_status_is_concise_and_immediate_acquisition_is_quiet() {
         "unexpected acquisition output: {}",
         lines[1]
     );
-}
-
-#[test]
-fn help_and_version_do_not_require_a_guarded_command() {
-    let help = agent_flock()
-        .arg("--help")
-        .output()
-        .expect("help should run");
-    assert!(help.status.success());
-    let help_stdout = String::from_utf8(help.stdout).expect("help should be UTF-8");
-    assert!(help_stdout.contains("agent-flock [--lock <name>] -- <command> [args...]"));
-    assert!(help_stdout.contains("--lock <name>"));
-
-    let version = agent_flock()
-        .arg("--version")
-        .output()
-        .expect("version should run");
-    assert!(version.status.success());
-    assert_eq!(version.stdout, b"agent-flock 0.1.0\n");
-}
-
-#[test]
-fn preserves_signal_termination_from_the_guarded_command() {
-    let root = TestDirectory::new("child-signal");
-    let status = agent_flock()
-        .env("AGENT_FLOCK_LOCK_DIR", root.path().join("locks"))
-        .args(["--", "sh", "-c", "kill -TERM $$"])
-        .status()
-        .expect("agent-flock should run a signal-terminated command");
-
-    assert_eq!(status.signal(), Some(15));
 }
