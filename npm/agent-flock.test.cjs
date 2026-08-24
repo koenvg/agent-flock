@@ -7,11 +7,17 @@ const path = require('node:path');
 const { spawnSync } = require('node:child_process');
 const test = require('node:test');
 
-const platformPackages = {
-  'darwin-arm64': '@koenvg/agent-flock-darwin-arm64',
-  'darwin-x64': '@koenvg/agent-flock-darwin-x64',
-  'linux-arm64': '@koenvg/agent-flock-linux-arm64',
-  'linux-x64': '@koenvg/agent-flock-linux-x64',
+const platforms = require('./platforms.json');
+const currentPlatform = platforms.find(
+  (platform) => platform.os === process.platform && platform.cpu === process.arch,
+);
+assert.ok(currentPlatform, 'test host must be in the supported npm platform matrix');
+
+const fixturePackage = {
+  name: 'agent-flock',
+  version: '0.1.0',
+  private: true,
+  bin: { 'agent-flock': 'npm/agent-flock.cjs' },
 };
 
 function fixture() {
@@ -19,21 +25,16 @@ function fixture() {
   const launcher = path.join(root, 'npm', 'agent-flock.cjs');
   fs.mkdirSync(path.dirname(launcher), { recursive: true });
   fs.copyFileSync(path.join(__dirname, 'agent-flock.cjs'), launcher);
+  fs.copyFileSync(path.join(__dirname, 'platforms.json'), path.join(root, 'npm', 'platforms.json'));
   fs.writeFileSync(
     path.join(root, 'package.json'),
-    JSON.stringify({
-      name: 'agent-flock',
-      version: '0.1.0',
-      private: true,
-      bin: { 'agent-flock': 'npm/agent-flock.cjs' },
-    }),
+    JSON.stringify(fixturePackage),
   );
   return { root, launcher };
 }
 
 function installFakeBinary(root, contents) {
-  const packageName = platformPackages[`${process.platform}-${process.arch}`];
-  assert.ok(packageName, 'test host must be in the supported npm platform matrix');
+  const packageName = currentPlatform.package;
   const packageRoot = path.join(root, 'node_modules', ...packageName.split('/'));
   const binary = path.join(packageRoot, 'bin', 'agent-flock');
   fs.mkdirSync(path.dirname(binary), { recursive: true });

@@ -110,14 +110,18 @@ jobs:
       - uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
         with:
           path: artifacts
-      - name: Assemble platform packages
-        run: node npm/assemble-platform-packages.mjs --artifacts artifacts --output dist/npm
+      - name: Assemble npm packages
+        run: >-
+          node npm/assemble-platform-packages.mjs
+          --artifacts artifacts
+          --output dist/npm
+          --launcher-output dist/launcher
       - name: Verify package contents
         run: |
           for package_dir in dist/npm/*; do
             npm pack "$package_dir" --dry-run
           done
-          npm pack --dry-run
+          npm pack dist/launcher --dry-run
       - name: Publish platform packages
         run: |
           version=$(node -p "require('./package.json').version")
@@ -131,12 +135,12 @@ jobs:
           done
       - name: Publish launcher package
         run: |
-          version=$(node -p "require('./package.json').version")
-          package_name=$(node -p "require('./package.json').name")
+          version=$(node -p "require('./dist/launcher/package.json').version")
+          package_name=$(node -p "require('./dist/launcher/package.json').name")
           if npm view "${package_name}@${version}" version >/dev/null 2>&1; then
             echo "${package_name}@${version} is already published"
           else
-            npm publish --access public
+            npm publish dist/launcher --access public
           fi
       - name: Prepare GitHub release assets
         run: |
