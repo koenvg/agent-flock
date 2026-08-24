@@ -9,7 +9,7 @@ Git worktrees isolate files, not RAM. If several coding agents run type checks, 
 Install the npm package in a JavaScript or TypeScript project:
 
 ```sh
-npm install --save-dev agent-flock
+npm install --save-dev @koenvg/agent-flock
 ```
 
 The npm package installs one native binary for the current platform through an optional platform package. It does not compile Rust or download files in an install script.
@@ -47,7 +47,7 @@ Route each memory-heavy script through the same resource group:
 ```json
 {
   "devDependencies": {
-    "agent-flock": "^0.1.0"
+    "@koenvg/agent-flock": "^0.1.0"
   },
   "scripts": {
     "typecheck": "agent-flock --lock high-memory -- tsc --noEmit",
@@ -183,4 +183,4 @@ node npm/assemble-platform-packages.mjs \
   --output dist/npm
 ```
 
-Publish the platform packages before publishing the root `agent-flock` package so every exact-version optional dependency is available.
+Publish the platform packages before publishing the root `@koenvg/agent-flock` package so every exact-version optional dependency is available.

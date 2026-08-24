@@ -1,5 +1,5 @@
 {
-  "name": "agent-flock",
+  "name": "@koenvg/agent-flock",
   "version": "0.1.0",
   "description": "Serialize memory-heavy development commands across processes and Git worktrees",
   "license": "MIT",
