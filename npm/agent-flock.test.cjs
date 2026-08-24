@@ -8,10 +8,10 @@ const { spawnSync } = require('node:child_process');
 const test = require('node:test');
 
 const platformPackages = {
-  'darwin-arm64': '@agent-flock/darwin-arm64',
-  'darwin-x64': '@agent-flock/darwin-x64',
-  'linux-arm64': '@agent-flock/linux-arm64',
-  'linux-x64': '@agent-flock/linux-x64',
+  'darwin-arm64': '@koenvg/agent-flock-darwin-arm64',
+  'darwin-x64': '@koenvg/agent-flock-darwin-x64',
+  'linux-arm64': '@koenvg/agent-flock-linux-arm64',
+  'linux-x64': '@koenvg/agent-flock-linux-x64',
 };
 
 function fixture() {

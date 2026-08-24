@@ -1,0 +1,145 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+  id-token: write
+
+jobs:
+  verify:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@1.89.0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - run: npm run format
+      - run: npm run lint
+      - run: npm run typecheck
+      - run: npm test
+      - name: Verify release version
+        run: |
+          node <<'NODE'
+          const packageVersion = require('./package.json').version;
+          const expectedTag = `v${packageVersion}`;
+          if (process.env.GITHUB_REF_NAME !== expectedTag) {
+            throw new Error(`tag ${process.env.GITHUB_REF_NAME} does not match package version ${packageVersion}`);
+          }
+          NODE
+
+  build:
+    needs: verify
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - id: darwin-arm64
+            runner: macos-14
+            target: aarch64-apple-darwin
+          - id: darwin-x64
+            runner: macos-15-intel
+            target: x86_64-apple-darwin
+          - id: linux-arm64
+            runner: ubuntu-24.04-arm
+            target: aarch64-unknown-linux-musl
+          - id: linux-x64
+            runner: ubuntu-24.04
+            target: x86_64-unknown-linux-musl
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@1.89.0
+        with:
+          targets: ${{ matrix.target }}
+      - name: Install musl tools
+        if: startsWith(matrix.id, 'linux-')
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes musl-tools
+      - name: Build native binary
+        run: cargo build --locked --release --target "${{ matrix.target }}"
+      - name: Check native binary
+        run: target/${{ matrix.target }}/release/agent-flock --version
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.id }}
+          path: target/${{ matrix.target }}/release/agent-flock
+          if-no-files-found: error
+
+  publish:
+    needs: build
+    runs-on: ubuntu-24.04
+    environment: npm
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          registry-url: https://registry.npmjs.org
+          cache: npm
+      - run: npm ci
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+      - name: Assemble platform packages
+        run: node npm/assemble-platform-packages.mjs --artifacts artifacts --output dist/npm
+      - name: Verify package contents
+        run: |
+          for package_dir in dist/npm/*; do
+            npm pack "$package_dir" --dry-run
+          done
+          npm pack --dry-run
+      - name: Publish platform packages
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: |
+          version=$(node -p "require('./package.json').version")
+          for package_dir in dist/npm/*; do
+            package_name=$(node -p "require('./${package_dir}/package.json').name")
+            if npm view "${package_name}@${version}" version >/dev/null 2>&1; then
+              echo "${package_name}@${version} is already published"
+            else
+              npm publish "$package_dir" --access public --provenance
+            fi
+          done
+      - name: Publish launcher package
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: |
+          version=$(node -p "require('./package.json').version")
+          if npm view "agent-flock@${version}" version >/dev/null 2>&1; then
+            echo "agent-flock@${version} is already published"
+          else
+            npm publish --access public --provenance
+          fi
+      - name: Prepare GitHub release assets
+        run: |
+          version=$(node -p "require('./package.json').version")
+          mkdir release-assets
+          for artifact_dir in artifacts/*; do
+            platform=${artifact_dir##*/}
+            chmod 0755 "$artifact_dir/agent-flock"
+            tar -C "$artifact_dir" -czf "release-assets/agent-flock-${version}-${platform}.tar.gz" agent-flock
+          done
+          cd release-assets
+          sha256sum ./*.tar.gz > SHA256SUMS
+      - name: Create GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          version=$(node -p "require('./package.json').version")
+          if gh release view "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            gh release upload "$GITHUB_REF_NAME" release-assets/* --clobber --repo "$GITHUB_REPOSITORY"
+          else
+            gh release create "$GITHUB_REF_NAME" release-assets/* \
+              --repo "$GITHUB_REPOSITORY" \
+              --title "agent-flock ${version}" \
+              --generate-notes
+          fi
