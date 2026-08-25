@@ -11,11 +11,23 @@ const repositoryRoot = path.resolve(__dirname, '..');
 const platforms = require('./platforms.json');
 const rootPackage = require('../package.json');
 
-test('platform package assembly creates publishable packages from release binaries', (context) => {
+test('platform matrix defines launcher packages and root optional dependencies', () => {
+  const expectedOptionalDependencies = {};
+  for (const platform of platforms) {
+    assert.equal(platform.id, `${platform.os}-${platform.cpu}`);
+    assert.equal(platform.package, `${rootPackage.name}-${platform.id}`);
+    expectedOptionalDependencies[platform.package] = rootPackage.version;
+  }
+
+  assert.deepEqual(rootPackage.optionalDependencies, expectedOptionalDependencies);
+});
+
+test('npm package assembly creates a self-contained launcher and platform packages', (context) => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'agent-flock-package-test-'));
   context.after(() => fs.rmSync(root, { recursive: true, force: true }));
   const artifacts = path.join(root, 'artifacts');
   const output = path.join(root, 'npm');
+  const launcherOutput = path.join(root, 'launcher');
 
   for (const platform of platforms) {
     const artifactDirectory = path.join(artifacts, platform.id);
@@ -31,14 +43,28 @@ test('platform package assembly creates publishable packages from release binari
       artifacts,
       '--output',
       output,
+      '--launcher-output',
+      launcherOutput,
     ],
     { encoding: 'utf8' },
   );
   assert.equal(result.status, 0, result.stderr);
 
-  const expectedOptionalDependencies = {};
+  const launcher = path.join(launcherOutput, 'npm', 'agent-flock.cjs');
+  const launcherSource = fs.readFileSync(launcher, 'utf8');
+  assert.doesNotMatch(launcherSource, /platforms\.json/);
   for (const platform of platforms) {
-    expectedOptionalDependencies[platform.package] = rootPackage.version;
+    assert.ok(
+      launcherSource.includes(`${JSON.stringify(platform.id)}: ${JSON.stringify(platform.package)}`),
+    );
+  }
+
+  const launcherManifest = JSON.parse(
+    fs.readFileSync(path.join(launcherOutput, 'package.json'), 'utf8'),
+  );
+  assert.deepEqual(launcherManifest, rootPackage);
+
+  for (const platform of platforms) {
     const packageRoot = path.join(output, platform.id);
     const manifest = JSON.parse(fs.readFileSync(path.join(packageRoot, 'package.json'), 'utf8'));
     assert.equal(manifest.name, platform.package);
@@ -52,6 +78,4 @@ test('platform package assembly creates publishable packages from release binari
     );
     assert.ok(fs.statSync(path.join(packageRoot, 'bin', 'agent-flock')).mode & 0o111);
   }
-
-  assert.deepEqual(rootPackage.optionalDependencies, expectedOptionalDependencies);
 });

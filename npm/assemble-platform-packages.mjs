@@ -8,6 +8,8 @@ const npmDirectory = path.dirname(fileURLToPath(import.meta.url));
 const repositoryRoot = path.resolve(npmDirectory, '..');
 const platforms = JSON.parse(fs.readFileSync(path.join(npmDirectory, 'platforms.json'), 'utf8'));
 const rootPackage = JSON.parse(fs.readFileSync(path.join(repositoryRoot, 'package.json'), 'utf8'));
+const platformLookupStart = '// BEGIN PLATFORM PACKAGE LOOKUP';
+const platformLookupEnd = '// END PLATFORM PACKAGE LOOKUP';
 
 function option(name) {
   const index = process.argv.indexOf(name);
@@ -15,6 +17,43 @@ function option(name) {
     throw new Error(`${name} is required`);
   }
   return path.resolve(process.argv[index + 1]);
+}
+
+function createOutputDirectory(output) {
+  if (fs.existsSync(output) && fs.readdirSync(output).length > 0) {
+    throw new Error(`output directory is not empty: ${output}`);
+  }
+  fs.mkdirSync(output, { recursive: true });
+}
+
+function publishedLauncher() {
+  const launcherPath = path.join(npmDirectory, 'agent-flock.cjs');
+  const source = fs.readFileSync(launcherPath, 'utf8');
+  const lookupStart = source.indexOf(platformLookupStart);
+  const lookupEnd = source.indexOf(platformLookupEnd, lookupStart + platformLookupStart.length);
+  if (lookupStart === -1 || lookupEnd === -1) {
+    throw new Error(`launcher platform lookup markers were not found in ${launcherPath}`);
+  }
+
+  const platformPackages = Object.fromEntries(
+    platforms.map(({ id, package: packageName }) => [id, packageName]),
+  );
+  const embeddedLookup = `\nconst platformPackages = ${JSON.stringify(platformPackages, null, 2)};\n`;
+  return (
+    source.slice(0, lookupStart + platformLookupStart.length) +
+    embeddedLookup +
+    source.slice(lookupEnd)
+  );
+}
+
+function assembleLauncherPackage(output) {
+  createOutputDirectory(output);
+  const launcher = path.join(output, 'npm', 'agent-flock.cjs');
+  fs.mkdirSync(path.dirname(launcher), { recursive: true });
+  fs.writeFileSync(launcher, publishedLauncher(), { mode: 0o755 });
+  for (const filename of ['LICENSE', 'README.md', 'package.json']) {
+    fs.copyFileSync(path.join(repositoryRoot, filename), path.join(output, filename));
+  }
 }
 
 function platformManifest(platform) {
@@ -34,10 +73,9 @@ function platformManifest(platform) {
 function main() {
   const artifacts = option('--artifacts');
   const output = option('--output');
-  if (fs.existsSync(output) && fs.readdirSync(output).length > 0) {
-    throw new Error(`output directory is not empty: ${output}`);
-  }
-  fs.mkdirSync(output, { recursive: true });
+  const launcherOutput = option('--launcher-output');
+  createOutputDirectory(output);
+  assembleLauncherPackage(launcherOutput);
 
   for (const platform of platforms) {
     const source = path.join(artifacts, platform.id, 'agent-flock');
@@ -56,7 +94,9 @@ function main() {
     );
   }
 
-  console.log(`assembled ${platforms.length} platform packages in ${output}`);
+  console.log(
+    `assembled launcher in ${launcherOutput} and ${platforms.length} platform packages in ${output}`,
+  );
 }
 
 try {

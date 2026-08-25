@@ -181,12 +181,13 @@ npm test
 npm run build
 ```
 
-`npm/assemble-platform-packages.mjs` turns release artifacts into the four platform packages. It expects one binary at `<artifacts>/<platform-id>/agent-flock` and writes publishable packages to an empty output directory:
+`npm/assemble-platform-packages.mjs` turns release artifacts into the four platform packages and a launcher package. It embeds the platform matrix in the published launcher, so the package does not need `platforms.json` at runtime. The script expects one binary at `<artifacts>/<platform-id>/agent-flock` and writes to empty output directories:
 
 ```sh
 node npm/assemble-platform-packages.mjs \
   --artifacts dist/artifacts \
-  --output dist/npm
+  --output dist/npm \
+  --launcher-output dist/launcher
 ```
 
 Publish the platform packages before publishing the root `@koenvg/agent-flock` package so every exact-version optional dependency is available.

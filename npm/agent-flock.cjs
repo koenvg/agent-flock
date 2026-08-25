@@ -5,12 +5,11 @@ const fs = require('node:fs');
 const path = require('node:path');
 const { spawn } = require('node:child_process');
 
-const platformPackages = {
-  'darwin-arm64': '@koenvg/agent-flock-darwin-arm64',
-  'darwin-x64': '@koenvg/agent-flock-darwin-x64',
-  'linux-arm64': '@koenvg/agent-flock-linux-arm64',
-  'linux-x64': '@koenvg/agent-flock-linux-x64',
-};
+// BEGIN PLATFORM PACKAGE LOOKUP
+const platformPackages = Object.fromEntries(
+  require('./platforms.json').map(({ id, package: packageName }) => [id, packageName]),
+);
+// END PLATFORM PACKAGE LOOKUP
 
 function fail(message) {
   console.error(`agent-flock: ${message}`);
