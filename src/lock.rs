@@ -110,9 +110,10 @@ struct LockDirectory {
 }
 
 struct PreparedLockDirectory {
-    path: PathBuf,
     #[cfg(unix)]
-    descriptor: Option<File>,
+    descriptor: File,
+    #[cfg(not(unix))]
+    path: PathBuf,
 }
 
 fn lock_directory() -> io::Result<LockDirectory> {
@@ -150,20 +151,28 @@ fn lock_directory() -> io::Result<LockDirectory> {
 
 fn prepare_lock_directory(directory: LockDirectory) -> io::Result<PreparedLockDirectory> {
     #[cfg(unix)]
-    if let Some(expected_owner) = directory.expected_owner {
-        let descriptor = prepare_default_lock_directory(&directory.path, expected_owner)?;
-        return Ok(PreparedLockDirectory {
-            path: directory.path,
-            descriptor: Some(descriptor),
-        });
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+
+        let descriptor = if let Some(expected_owner) = directory.expected_owner {
+            prepare_default_lock_directory(&directory.path, expected_owner)?
+        } else {
+            fs::create_dir_all(&directory.path)?;
+            OpenOptions::new()
+                .read(true)
+                .custom_flags(libc::O_DIRECTORY | libc::O_CLOEXEC)
+                .open(&directory.path)?
+        };
+        Ok(PreparedLockDirectory { descriptor })
     }
 
-    fs::create_dir_all(&directory.path)?;
-    Ok(PreparedLockDirectory {
-        path: directory.path,
-        #[cfg(unix)]
-        descriptor: None,
-    })
+    #[cfg(not(unix))]
+    {
+        fs::create_dir_all(&directory.path)?;
+        Ok(PreparedLockDirectory {
+            path: directory.path,
+        })
+    }
 }
 
 #[cfg(unix)]
@@ -222,7 +231,7 @@ fn prepare_default_lock_directory(
 
 fn open_lock_file(directory: &PreparedLockDirectory, file_name: &str) -> io::Result<File> {
     #[cfg(unix)]
-    if let Some(descriptor) = &directory.descriptor {
+    {
         use std::ffi::CString;
         use std::os::fd::{AsRawFd, FromRawFd};
 
@@ -234,7 +243,7 @@ fn open_lock_file(directory: &PreparedLockDirectory, file_name: &str) -> io::Res
         })?;
         let file_descriptor = unsafe {
             libc::openat(
-                descriptor.as_raw_fd(),
+                directory.descriptor.as_raw_fd(),
                 file_name.as_ptr(),
                 libc::O_RDWR | libc::O_CREAT | libc::O_CLOEXEC | libc::O_NOFOLLOW,
                 0o600,
@@ -244,9 +253,10 @@ fn open_lock_file(directory: &PreparedLockDirectory, file_name: &str) -> io::Res
             return Err(io::Error::last_os_error());
         }
 
-        return Ok(unsafe { File::from_raw_fd(file_descriptor) });
+        Ok(unsafe { File::from_raw_fd(file_descriptor) })
     }
 
+    #[cfg(not(unix))]
     OpenOptions::new()
         .read(true)
         .write(true)
