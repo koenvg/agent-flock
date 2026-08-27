@@ -113,26 +113,11 @@ jobs:
             npm pack "$package_dir" --dry-run
           done
           npm pack dist/launcher --dry-run
-      - name: Publish platform packages
-        run: |
-          version=$(node -p "require('./package.json').version")
-          for package_dir in dist/npm/*; do
-            package_name=$(node -p "require('./${package_dir}/package.json').name")
-            if npm view "${package_name}@${version}" version >/dev/null 2>&1; then
-              echo "${package_name}@${version} is already published"
-            else
-              npm publish "$package_dir" --access public
-            fi
-          done
-      - name: Publish launcher package
-        run: |
-          version=$(node -p "require('./dist/launcher/package.json').version")
-          package_name=$(node -p "require('./dist/launcher/package.json').name")
-          if npm view "${package_name}@${version}" version >/dev/null 2>&1; then
-            echo "${package_name}@${version} is already published"
-          else
-            npm publish dist/launcher --access public
-          fi
+      - name: Publish npm packages
+        run: >-
+          node npm/publish-packages.mjs
+          --platform-packages dist/npm
+          --launcher-package dist/launcher
       - name: Prepare GitHub release assets
         run: |
           version=$(node -p "require('./package.json').version")

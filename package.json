@@ -39,7 +39,7 @@
     "build": "cargo build --release",
     "format": "cargo fmt --all -- --check",
     "format:write": "cargo fmt --all",
-    "lint": "cargo clippy --all-targets --all-features -- -D warnings && node --check npm/agent-flock.cjs && node --check npm/agent-flock.test.cjs && node --check npm/assemble-platform-packages.mjs && node --check npm/package.test.cjs",
+    "lint": "cargo clippy --all-targets --all-features -- -D warnings && node --check npm/agent-flock.cjs && node --check npm/agent-flock.test.cjs && node --check npm/assemble-platform-packages.mjs && node --check npm/package.test.cjs && node --check npm/publish-packages.mjs && node --check npm/publish-packages.test.cjs",
     "test": "cargo test --all-targets && node --test npm/*.test.cjs",
     "typecheck": "cargo check --all-targets"
   },
