@@ -17,18 +17,9 @@ jobs:
         with:
           persist-credentials: false
           fetch-depth: 0
-      - uses: dtolnay/rust-toolchain@1d1eb14921d9c2d8ea575663e5fe3a0b57868a05 # 1.89.0
-        with:
-          components: clippy, rustfmt
-      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+      - uses: ./.github/actions/verify
         with:
           node-version: 24
-          package-manager-cache: false
-      - run: npm ci --ignore-scripts
-      - run: npm run format
-      - run: npm run lint
-      - run: npm run typecheck
-      - run: npm test
       - name: Verify release commit
         run: |
           git fetch --no-tags origin main:refs/remotes/origin/main
