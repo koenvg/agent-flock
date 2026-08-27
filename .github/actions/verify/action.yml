@@ -1,0 +1,34 @@
+name: Verify
+
+description: Install toolchains and run the repository verification suite
+
+inputs:
+  node-version:
+    description: Node.js version used for verification
+    required: true
+  npm-cache:
+    description: Whether setup-node should cache npm dependencies
+    required: false
+    default: "false"
+
+runs:
+  using: composite
+  steps:
+    - uses: dtolnay/rust-toolchain@1d1eb14921d9c2d8ea575663e5fe3a0b57868a05 # 1.89.0
+      with:
+        components: clippy,rustfmt
+    - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+      with:
+        node-version: ${{ inputs.node-version }}
+        cache: ${{ inputs.npm-cache == 'true' && 'npm' || '' }}
+        package-manager-cache: ${{ inputs.npm-cache }}
+    - run: npm ci --ignore-scripts
+      shell: bash
+    - run: npm run format
+      shell: bash
+    - run: npm run lint
+      shell: bash
+    - run: npm run typecheck
+      shell: bash
+    - run: npm test
+      shell: bash
