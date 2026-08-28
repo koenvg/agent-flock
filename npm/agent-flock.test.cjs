@@ -51,6 +51,20 @@ function installSourceBinary(root, contents) {
   fs.writeFileSync(binary, contents, { mode: 0o755 });
 }
 
+function installLauncherReadyHook(root, ready) {
+  const hook = path.join(root, 'launcher-ready.cjs');
+  fs.writeFileSync(
+    hook,
+    `'use strict';
+
+const fs = require('node:fs');
+
+setImmediate(() => fs.writeFileSync(${JSON.stringify(ready)}, 'ready'));
+`,
+  );
+  return hook;
+}
+
 test('npm launcher forwards arguments, stdio, cwd, environment, and exit code', (context) => {
   const { root, launcher } = fixture();
   context.after(() => fs.rmSync(root, { recursive: true, force: true }));
@@ -120,22 +134,33 @@ test('npm launcher reports a missing platform binary without an install script f
 test('npm launcher forwards targeted termination and preserves signal status', async (context) => {
   const { root, launcher } = fixture();
   context.after(() => fs.rmSync(root, { recursive: true, force: true }));
-  const ready = path.join(root, 'ready');
+  const launcherReady = path.join(root, 'launcher-ready');
+  const nativeReady = path.join(root, 'native-ready');
   const interrupted = path.join(root, 'interrupted');
+  // The preloaded callback runs after the launcher has installed its signal handlers.
+  const launcherReadyHook = installLauncherReadyHook(root, launcherReady);
   installFakeBinary(
     root,
     '#!/bin/sh\ntrap \'printf interrupted > "$2"; exit 0\' TERM\nprintf ready > "$1"\nwhile :; do sleep 0.05; done\n',
   );
 
-  const child = require('node:child_process').spawn(process.execPath, [launcher, ready, interrupted], {
-    cwd: root,
-    stdio: 'ignore',
-  });
+  const child = require('node:child_process').spawn(
+    process.execPath,
+    ['--require', launcherReadyHook, launcher, nativeReady, interrupted],
+    {
+      cwd: root,
+      stdio: 'ignore',
+    },
+  );
   const deadline = Date.now() + 5000;
-  while (!fs.existsSync(ready) && Date.now() < deadline) {
+  while (
+    (!fs.existsSync(launcherReady) || !fs.existsSync(nativeReady)) &&
+    Date.now() < deadline
+  ) {
     await new Promise((resolve) => setTimeout(resolve, 10));
   }
-  assert.ok(fs.existsSync(ready), 'native process did not become ready');
+  assert.ok(fs.existsSync(launcherReady), 'launcher did not install its SIGTERM handler');
+  assert.ok(fs.existsSync(nativeReady), 'native process did not become ready');
 
   child.kill('SIGTERM');
   const result = await new Promise((resolve) => {
