@@ -2,13 +2,12 @@
 
 mod support;
 
-use std::fs;
 use std::os::unix::process::ExitStatusExt;
 use std::process::{Command, Stdio};
 use std::thread;
 use std::time::{Duration, Instant};
 
-use support::{TestDirectory, agent_flock, send_signal, wait_for_path};
+use support::{TestCommandExt, TestDirectory, agent_flock, send_signal, wait_for_pid};
 
 #[test]
 fn interruption_reaches_the_guarded_command_and_releases_the_lock() {
@@ -23,17 +22,16 @@ fn interruption_reaches_the_guarded_command_and_releases_the_lock() {
         .args(["--lock", "memory", "--", "sh", "-c"])
         .arg(
             "trap 'printf interrupted > \"$2\"; exit 0' TERM; \
-             printf '%s' \"$$\" > \"$1\"; while :; do sleep 0.05; done",
+             : > \"$1\"; sleep 0.1; printf '%s' \"$$\" > \"$1\"; \
+             while :; do sleep 0.05; done",
         )
         .arg("holder")
         .arg(&guarded_pid_path)
         .arg(&interrupted_path);
-    let mut holder = holder.spawn().expect("interruptible holder should start");
-    wait_for_path(&guarded_pid_path);
-    let guarded_pid: u32 = fs::read_to_string(&guarded_pid_path)
-        .expect("guarded pid should be readable")
-        .parse()
-        .expect("guarded pid should be numeric");
+    let mut holder = holder
+        .spawn_guarded()
+        .expect("interruptible holder should start");
+    let guarded_pid = wait_for_pid(&guarded_pid_path);
 
     send_signal(holder.id(), "-TERM");
     let holder_status = holder.wait().expect("interrupted wrapper should finish");
@@ -77,12 +75,8 @@ fn interruption_stops_a_waiter_without_running_its_command() {
         .arg("printf '%s' \"$$\" > \"$1\"; exec sleep 60")
         .arg("holder")
         .arg(&guarded_pid_path);
-    let mut holder = holder.spawn().expect("holder should start");
-    wait_for_path(&guarded_pid_path);
-    let guarded_pid: u32 = fs::read_to_string(&guarded_pid_path)
-        .expect("guarded pid should be readable")
-        .parse()
-        .expect("guarded pid should be numeric");
+    let mut holder = holder.spawn_guarded().expect("holder should start");
+    let guarded_pid = wait_for_pid(&guarded_pid_path);
 
     let mut waiter = agent_flock();
     waiter
@@ -92,7 +86,7 @@ fn interruption_stops_a_waiter_without_running_its_command() {
         .arg("waiter")
         .arg(&command_ran_path)
         .stderr(Stdio::null());
-    let mut waiter = waiter.spawn().expect("waiter should start");
+    let mut waiter = waiter.spawn_guarded().expect("waiter should start");
     thread::sleep(Duration::from_millis(200));
     assert!(!command_ran_path.exists());
 
@@ -121,6 +115,35 @@ fn interruption_stops_a_waiter_without_running_its_command() {
     );
     assert_eq!(waiter_status.signal(), Some(15));
     assert!(!command_ran_path.exists());
+}
+
+#[test]
+fn guarded_children_are_cleaned_up_during_unwind() {
+    let root = TestDirectory::new("child-cleanup");
+    let guarded_pid_path = root.path().join("guarded.pid");
+
+    let panic = std::panic::catch_unwind(|| {
+        let mut child = agent_flock();
+        child
+            .env("AGENT_FLOCK_LOCK_DIR", root.path().join("locks"))
+            .args(["--", "sh", "-c"])
+            .arg("printf '%s' \"$$\" > \"$1\"; while :; do sleep 1; done")
+            .arg("guarded-child")
+            .arg(&guarded_pid_path);
+        let _child = child.spawn_guarded().expect("guarded child should start");
+        let guarded_pid = wait_for_pid(&guarded_pid_path);
+
+        assert_eq!(guarded_pid, 0, "trigger cleanup during assertion unwind");
+    });
+
+    assert!(panic.is_err(), "test assertion should have panicked");
+    let guarded_pid = wait_for_pid(&guarded_pid_path);
+    let result = unsafe { libc::kill(guarded_pid as libc::pid_t, 0) };
+    assert_eq!(result, -1, "guarded child should no longer be running");
+    assert_eq!(
+        std::io::Error::last_os_error().raw_os_error(),
+        Some(libc::ESRCH)
+    );
 }
 
 #[test]

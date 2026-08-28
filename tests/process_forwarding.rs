@@ -6,7 +6,7 @@ use std::fs;
 use std::io::Write;
 use std::process::Stdio;
 
-use support::{TestDirectory, agent_flock};
+use support::{TestCommandExt, TestDirectory, agent_flock};
 
 #[test]
 fn forwards_the_guarded_commands_exit_code() {
@@ -66,7 +66,7 @@ fn preserves_cwd_environment_and_stdio() {
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
-    let mut child = command.spawn().expect("agent-flock should start");
+    let mut child = command.spawn_guarded().expect("agent-flock should start");
     child
         .stdin
         .as_mut()

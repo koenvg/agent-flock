@@ -13,7 +13,10 @@ use std::sync::Mutex;
 use std::thread;
 use std::time::Duration;
 
-use support::{TestDirectory, agent_flock, send_signal, unique_path_in, wait_for_path};
+use support::{
+    TestCommandExt, TestDirectory, agent_flock, send_signal, unique_path_in, wait_for_path,
+    wait_for_pid,
+};
 
 static DEFAULT_LOCK_DIRECTORY_MUTEX: Mutex<()> = Mutex::new(());
 
@@ -232,7 +235,7 @@ fn separate_worktrees_cannot_enter_the_same_guarded_section_together() {
     fs::create_dir(&worktree_b).expect("second worktree should be created");
 
     let mut first = critical_section_command(root.path(), &worktree_a, "memory", "a")
-        .spawn()
+        .spawn_guarded()
         .expect("first agent-flock process should start");
     wait_for_path(&root.path().join("critical"));
 
@@ -264,13 +267,8 @@ fn crash_recovery_needs_no_stale_timeout_and_tracks_the_orphaned_command() {
         .arg("printf '%s' \"$$\" > \"$1\"; exec sleep 60")
         .arg("holder")
         .arg(&guarded_pid_path);
-    let mut holder = holder.spawn().expect("lock holder should start");
-    wait_for_path(&guarded_pid_path);
-
-    let guarded_pid: u32 = fs::read_to_string(&guarded_pid_path)
-        .expect("guarded pid should be readable")
-        .parse()
-        .expect("guarded pid should be numeric");
+    let mut holder = holder.spawn_guarded().expect("lock holder should start");
+    let guarded_pid = wait_for_pid(&guarded_pid_path);
     send_signal(holder.id(), "-KILL");
     let holder_status = holder.wait().expect("killed wrapper should be reaped");
     assert_eq!(holder_status.signal(), Some(9));
@@ -282,7 +280,7 @@ fn crash_recovery_needs_no_stale_timeout_and_tracks_the_orphaned_command() {
         .arg("printf acquired > \"$1\"")
         .arg("waiter")
         .arg(&acquired_path);
-    let mut waiter = waiter.spawn().expect("waiter should start");
+    let mut waiter = waiter.spawn_guarded().expect("waiter should start");
 
     thread::sleep(Duration::from_millis(300));
     let acquired_before_guarded_exit = acquired_path.exists();
@@ -306,7 +304,7 @@ fn different_lock_groups_can_run_concurrently() {
     fs::create_dir(&worktree_b).expect("second worktree should be created");
 
     let mut first = critical_section_command(root.path(), &worktree_a, "memory", "holder")
-        .spawn()
+        .spawn_guarded()
         .expect("first resource group should start");
     wait_for_path(&root.path().join("critical"));
 
@@ -345,7 +343,7 @@ fn default_lock_directory_is_stable_across_temp_directories() {
     first
         .env_remove("AGENT_FLOCK_LOCK_DIR")
         .env("TMPDIR", &temp_a);
-    let mut first = first.spawn().expect("first process should start");
+    let mut first = first.spawn_guarded().expect("first process should start");
     wait_for_path(&root.path().join("critical"));
 
     let mut second = critical_section_command(root.path(), &worktree_b, &lock_name, "b");
@@ -383,7 +381,7 @@ fn waiting_status_is_concise_and_immediate_acquisition_is_quiet() {
         .arg("printf ready > \"$1\"; sleep 0.3")
         .arg("holder")
         .arg(&ready_path);
-    let mut holder = holder.spawn().expect("holder should start");
+    let mut holder = holder.spawn_guarded().expect("holder should start");
     wait_for_path(&ready_path);
 
     let waiter = agent_flock()
