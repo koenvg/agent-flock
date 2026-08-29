@@ -103,5 +103,8 @@ fn help_and_version_do_not_require_a_guarded_command() {
         .output()
         .expect("version should run");
     assert!(version.status.success());
-    assert_eq!(version.stdout, b"agent-flock 0.1.0\n");
+    assert_eq!(
+        version.stdout,
+        format!("agent-flock {}\n", env!("CARGO_PKG_VERSION")).as_bytes()
+    );
 }
