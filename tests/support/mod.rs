@@ -161,6 +161,43 @@ pub fn agent_flock() -> Command {
     Command::new(env!("CARGO_BIN_EXE_agent-flock"))
 }
 
+pub fn critical_section_command(
+    root: &Path,
+    worktree: &Path,
+    lock_name: &str,
+    participant: &str,
+) -> Command {
+    let script = r#"
+critical=$1
+log=$2
+participant=$3
+if ! mkdir "$critical" 2>/dev/null; then
+  printf 'overlap:%s\n' "$participant" >> "$log"
+  exit 91
+fi
+printf 'enter:%s\n' "$participant" >> "$log"
+sleep 0.25
+printf 'exit:%s\n' "$participant" >> "$log"
+rmdir "$critical"
+"#;
+
+    let mut command = agent_flock();
+    command
+        .current_dir(worktree)
+        .env("AGENT_FLOCK_LOCK_DIR", root.join("locks"))
+        .arg("--lock")
+        .arg(lock_name)
+        .arg("--")
+        .arg("sh")
+        .arg("-c")
+        .arg(script)
+        .arg("critical-section")
+        .arg(root.join("critical"))
+        .arg(root.join("events.log"))
+        .arg(participant);
+    command
+}
+
 pub fn send_signal(pid: u32, signal: &str) {
     let status = Command::new("kill")
         .args([signal, &pid.to_string()])
