@@ -1,6 +1,6 @@
 {
   "name": "@koenvg/agent-flock",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "description": "Serialize memory-heavy development commands across processes and Git worktrees",
   "license": "MIT",
   "repository": {
@@ -30,10 +30,10 @@
     "node": ">=18"
   },
   "optionalDependencies": {
-    "@koenvg/agent-flock-darwin-arm64": "0.1.1",
-    "@koenvg/agent-flock-darwin-x64": "0.1.1",
-    "@koenvg/agent-flock-linux-arm64": "0.1.1",
-    "@koenvg/agent-flock-linux-x64": "0.1.1"
+    "@koenvg/agent-flock-darwin-arm64": "0.1.2",
+    "@koenvg/agent-flock-darwin-x64": "0.1.2",
+    "@koenvg/agent-flock-linux-arm64": "0.1.2",
+    "@koenvg/agent-flock-linux-x64": "0.1.2"
   },
   "scripts": {
     "build": "cargo build --release",
