@@ -109,10 +109,10 @@ jobs:
           --launcher-output dist/launcher
       - name: Verify package contents
         run: |
-          for package_dir in dist/npm/*; do
+          for package_dir in ./dist/npm/*; do
             npm pack "$package_dir" --dry-run
           done
-          npm pack dist/launcher --dry-run
+          npm pack ./dist/launcher --dry-run
       - name: Publish npm packages
         run: >-
           node npm/publish-packages.mjs
